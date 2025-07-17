@@ -1,54 +1,54 @@
-const express = require('express');
-const http = require('http');
-const socketIO = require('socket.io');
+const WebSocket = require('ws');
+const { v4: uuidv4 } = require('uuid');
 
-const app = express();
-const server = http.createServer(app);
-const io = socketIO(server, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
-    }
-});
+const wss = new WebSocket.Server({ port: 8080 });
+const rooms = new Map();
 
-const PORT = 3000;
+wss.on('connection', (ws) => {
+  console.log('New client connected');
 
-io.on('connection', (socket) => {
-    console.log('New client connected: ' + socket.id);
+  ws.on('message', (message) => {
+    const data = JSON.parse(message);
 
-    // Join a room
-    socket.on('join', (roomId) => {
-        socket.join(roomId);
-        console.log(`${socket.id} joined room ${roomId}`);
+    if (data.type === 'join') {
+      const roomId = data.roomId;
+      if (!rooms.has(roomId)) {
+        rooms.set(roomId, new Set());
+      }
+      const clients = rooms.get(roomId);
+      clients.add(ws);
+      console.log(`Client joined room: ${roomId}, Total: ${clients.size}`);
 
-        const clients = io.sockets.adapter.rooms.get(roomId);
-        const numClients = clients ? clients.size : 0;
-
-        if (numClients > 1) {
-            socket.to(roomId).emit('ready');
+      // Notify other clients in the room
+      clients.forEach((client) => {
+        if (client !== ws && client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({ type: 'user-joined', roomId }));
         }
-    });
+      });
+    }
 
-    // Relay offer
-    socket.on('offer', (data) => {
-        socket.to(data.room).emit('offer', data.sdp);
-    });
+    if (data.type === 'offer' || data.type === 'answer' || data.type === 'candidate') {
+      const roomId = data.roomId;
+      const clients = rooms.get(roomId) || new Set();
+      clients.forEach((client) => {
+        if (client !== ws && client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify(data));
+        }
+      });
+    }
+  });
 
-    // Relay answer
-    socket.on('answer', (data) => {
-        socket.to(data.room).emit('answer', data.sdp);
+  ws.on('close', () => {
+    console.log('Client disconnected');
+    rooms.forEach((clients, roomId) => {
+      if (clients.has(ws)) {
+        clients.delete(ws);
+        if (clients.size === 0) {
+          rooms.delete(roomId);
+        }
+      }
     });
-
-    // Relay ICE candidates
-    socket.on('ice-candidate', (data) => {
-        socket.to(data.room).emit('ice-candidate', data.candidate);
-    });
-
-    socket.on('disconnect', () => {
-        console.log('Client disconnected: ' + socket.id);
-    });
+  });
 });
 
-server.listen(PORT, () => {
-    console.log(`Signaling server running on http://localhost:${PORT}`);
-});
+console.log('Signaling server running on ws://localhost:8080');
